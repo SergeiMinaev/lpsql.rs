@@ -2,7 +2,12 @@
 name = "lpsql"
 description = "[draft] Micro PostgreSQL async driver based on libpq."
 version = "0.1.0"
+authors = ["Sergei Minaev <i@zenux.ru>"]
 edition = "2021"
+
+[[bin]]
+name = "lpsql"
+path = "src/bin/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
