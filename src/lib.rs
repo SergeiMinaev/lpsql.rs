@@ -5,6 +5,7 @@ use std::ffi::{CString, CStr};
 use std::{slice, str, ptr};
 use chrono::prelude::*;
 use tinyjson::JsonValue;
+use core::fmt::Error;
 
 // pg types
 //    16 = Bool                 
@@ -57,11 +58,10 @@ use tinyjson::JsonValue;
 
 
 
-pub fn main() {
+pub fn execute(query: &str) -> Result<Vec<String>, &'static str> {
     CombinedLogger::init(
-        vec![
-            TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-        ]
+        vec![TermLogger::new(LevelFilter::Info, Config::default(),
+        TerminalMode::Mixed, ColorChoice::Auto)]
     ).unwrap();
     let is_debug = false;
     let conninfo = CString::new("dbname=target_zen user=sm password=123")
@@ -72,67 +72,53 @@ pub fn main() {
         if PQstatus(conn) != CONNECTION_OK {
             panic!("Unable to establish connection");
         }
-        let query = CString::new("SHOW client_encoding").expect("");
-        let query = CString::new("SELECT json_build_object(
-            'id', id,
-            'comment', comment,
-            'start_dt', start_dt,
-            'stop_dt', stop_dt,
-            'is_busy', is_busy
-        ) FROM ads_adprojectblock").unwrap();
-        let _query = CString::new("SELECT id, comment, start_dt, stop_dt
-            FROM ads_adprojectblock").unwrap();
-        for i in 0..10 {
-            //info!("{}", i);
-            let res = PQexec(conn, query.as_ptr());
-            if PQresultStatus(res) != PGRES_TUPLES_OK {
-                error!("RES NE OK");
-                PQclear(res);
-            } else {
-                let num_rows = PQntuples(res);
-                let num_cols = PQnfields(res);
-                debug!("Num rows {:?}, num cols: {:?}", num_rows, num_cols);
+        let query = CString::new(query).unwrap();
+        let res = PQexec(conn, query.as_ptr());
+        if PQresultStatus(res) != PGRES_TUPLES_OK {
+            PQclear(res);
+            return Err("Unknown error occured");
+        } else {
+            let num_rows = PQntuples(res);
+            let num_cols = PQnfields(res);
+            info!("Num rows {:?}, num cols: {:?}", num_rows, num_cols);
 
-                for row_idx in 0..num_rows {
-                    debug!("\nrow idx {}", row_idx);
-                    for col_idx in 0..num_cols {
-                        let field_name = CStr::from_ptr(PQfname(res, col_idx))
-                            .to_str().expect("cant make field_name");
-                        let col_type_id = PQftype(res, col_idx);
-                //        //let value_ptr = PQgetvalue(res, row_idx, col_idx) as *const u8;
-                //        //let num_bytes = PQgetlength(res, row_idx, col_idx);
-                //        //let field_val_slice = slice::from_raw_parts(value_ptr, num_bytes as usize);
-                //        //let field_val = String::from_utf8_lossy(field_val_slice);
-                        let value_ptr = PQgetvalue(res, row_idx, col_idx);
-                        let mut field_val = CStr::from_ptr(value_ptr)
-                            .to_str().expect("cant make field_val");
-                        info!("field name: {}, type id: {}, value: \n{}", field_name, col_type_id, field_val);
-                //        if field_val != "" {
-                //            if col_type_id == 16 {
-                //                if field_val == "t" { field_val = "true"; }
-                //                else { field_val = "false"; }
-                //                let field_val: bool = field_val.parse().unwrap();
-                //            } else if col_type_id == 23 {
-                //                let field_val = field_val.parse::<i32>().unwrap();
-                //            } else if col_type_id == 1043 {
-                //            } else if col_type_id == 1184 {
-                //                let field_val = DateTime::parse_from_str(
-                //                    field_val, "%Y-%m-%d %H:%M:%S %#z"
-                //                ).unwrap();
-                //            } else if col_type_id ==  3802 {
-                //                debug!(">>>>>>>>>>>>>> RAW JSON STR{:?}", field_val);
-                //                let json: JsonValue = field_val.parse().unwrap();
-                //                debug!(">>>>>>>>>>>>>> JSON {:?}", json);
-                //                let json_str = json.stringify().unwrap();
-                //                debug!(">>>>>>>>>>>>>> JSON STR {:?}", json_str);
-                //            } else {
-                //                debug!("???? UNKNOWN TYPE ID: {}", col_type_id);
-                //            }
-                //        }
-                //        debug!(">>> parsed value: {}", field_val);
-                    }
+            let mut r: Vec<String> = vec![];
+            for row_idx in 0..num_rows {
+                info!("\nrow idx {}", row_idx);
+                for col_idx in 0..num_cols {
+                    let field_name = CStr::from_ptr(PQfname(res, col_idx))
+                        .to_str().expect("cant make field_name");
+                    let col_type_id = PQftype(res, col_idx);
+                    let value_ptr = PQgetvalue(res, row_idx, col_idx);
+                    let field_val = CStr::from_ptr(value_ptr)
+                        .to_str().expect("cant make field_val");
+                    r.push(field_val.to_string());
+            //        if field_val != "" {
+            //            if col_type_id == 16 {
+            //                if field_val == "t" { field_val = "true"; }
+            //                else { field_val = "false"; }
+            //                let field_val: bool = field_val.parse().unwrap();
+            //            } else if col_type_id == 23 {
+            //                let field_val = field_val.parse::<i32>().unwrap();
+            //            } else if col_type_id == 1043 {
+            //            } else if col_type_id == 1184 {
+            //                let field_val = DateTime::parse_from_str(
+            //                    field_val, "%Y-%m-%d %H:%M:%S %#z"
+            //                ).unwrap();
+            //            } else if col_type_id ==  3802 {
+            //                debug!(">>> RAW JSON STR{:?}", field_val);
+            //                let json: JsonValue = field_val.parse().unwrap();
+            //                debug!(">>> JSON {:?}", json);
+            //                let json_str = json.stringify().unwrap();
+            //                debug!(">>> JSON STR {:?}", json_str);
+            //            } else {
+            //                debug!("UNKNOWN TYPE ID: {}", col_type_id);
+            //            }
+            //        }
+            //        debug!(">>> parsed value: {}", field_val);
                 }
             }
+            return Ok(r);
         }
     }
 }
