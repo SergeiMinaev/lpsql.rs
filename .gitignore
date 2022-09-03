@@ -15,3 +15,5 @@ Cargo.lock
 lpsql.toml
 *.pfx
 *.pid
+
+__pycache__/
