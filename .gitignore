@@ -11,6 +11,7 @@ Cargo.lock
 
 # vim
 *.swp
+*.swo
 
 lpsql.toml
 *.pfx
