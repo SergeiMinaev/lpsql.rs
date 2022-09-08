@@ -33,7 +33,7 @@ pub fn exec(query: &str, params: Vec<QueryParam>
     unsafe {
         let conn = PQconnectdb(conninfo.as_ptr());
         if PQstatus(conn) != CONNECTION_OK {
-            return Err("Unable to establish connection".to_string());
+            return result_and_finish(conn, Err("Unable to establish connection".to_string()))
         }
         let stmt_name = CString::new(
             thread_rng().gen_range(0..9999).to_string()).unwrap();
@@ -74,25 +74,32 @@ pub fn exec(query: &str, params: Vec<QueryParam>
                             r.push(field_val.to_string());
                         }
                     }
-                    return Ok(r);
+                    return result_and_finish(conn, Ok(r));
                 },
                 PGRES_COMMAND_OK => {
-                    return Ok(vec![]);
+                    return result_and_finish(conn, Ok(vec![]));
                 },
                 _ => {
                     let err_msg = CStr::from_ptr(PQresultErrorMessage(res));
-                    return Err(format!("PQExecPrepared err: {err_msg:?}"));
+                    return result_and_finish(
+                        conn, Err(format!("PQExecPrepared err: {err_msg:?}")));
                 }
             }
         } else {
             let st = PQresultStatus(prepare_res);
             println!("PQprepare status: {st:?}");
             let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res));
-            return Err(format!("PQprepare err: {err_msg:?}"));
+            return result_and_finish(conn, Err(format!("PQprepare err: {err_msg:?}")));
         }
     }
 }
-
+pub fn result_and_finish(conn: *mut PGconn, res: Result<Vec<String>, String>
+                         ) -> Result<Vec<String>, String> {
+    unsafe {
+        let _ = PQfinish(conn);
+    }
+    return res
+}
 pub fn get_one(query: &str, params: Vec<QueryParam>
                      ) -> Option<String> {
     match exec(query, params) {
