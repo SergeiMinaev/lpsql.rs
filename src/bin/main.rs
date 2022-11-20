@@ -19,7 +19,7 @@ impl User {
         let mut structs: Vec<User> = vec![];
         let prms: Vec<qp> = vec![];
         let query = "select row_to_json(data) from (select * from users) data";
-        let r = lpsql::exec(query, prms);
+        let r = lpsql::_exec(query, prms);
         for row in r.unwrap() {
             //println!("row: {row:?}\n");
             let u: User = serde_json::from_str(&row).unwrap();
@@ -34,7 +34,7 @@ impl User {
         ];
         let query = "insert into users (name, is_active) \
             values ($1::TEXT, $2::BOOL)";
-        match lpsql::exec(query, prms) {
+        match lpsql::_exec(query, prms) {
             Err(e) => println!("{e}"),
             Ok(v) => println!("{v:?}"),
         }
@@ -49,7 +49,7 @@ fn main() {
     ];
     let query = "select * from users where id = $1::INT \
                  and name = $2::TEXT and is_active = $3::BOOL";
-    let r = lpsql::exec(query, prms);
+    let r = lpsql::_exec(query, prms);
     println!("SQL result: {r:?}");
     
     let _users = User::all();

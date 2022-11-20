@@ -24,7 +24,7 @@ impl QueryParam {
 }
 
 
-pub fn exec(query: &str, params: Vec<QueryParam>
+pub fn _exec(query: &str, params: Vec<QueryParam>
                      ) -> Result<Vec<String>, String> {
     let conf = CONF.read().unwrap();
     let conninfo = CString::new(format!(
@@ -102,7 +102,7 @@ pub fn result_and_finish(conn: *mut PGconn, res: Result<Vec<String>, String>
 }
 pub fn get_one(query: &str, params: Vec<QueryParam>
                      ) -> Option<String> {
-    match exec(query, params) {
+    match _exec(query, params) {
         Err(_) => None,
         Ok(v) => {
             if v.len() == 0 {
@@ -111,5 +111,15 @@ pub fn get_one(query: &str, params: Vec<QueryParam>
                 return Some(v[0].to_string())
             }
         }
+    }
+}
+
+pub fn exec(query: &str, params: Vec<QueryParam>) -> bool {
+    match _exec(query, params) {
+        Err(e) => {
+            println!("LPSQL ERR: {e}");
+            return false
+        },
+        Ok(_) => true
     }
 }
