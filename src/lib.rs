@@ -4,6 +4,9 @@ use std::{str, ptr};
 use rand::{thread_rng, Rng};
 use pq_sys::*;
 use crate::conf::CONF;
+use pq_sys::ConnStatusType::CONNECTION_OK;
+use pq_sys::ExecStatusType::PGRES_COMMAND_OK;
+use pq_sys::ExecStatusType::PGRES_TUPLES_OK;
 pub mod conf;
 
 
