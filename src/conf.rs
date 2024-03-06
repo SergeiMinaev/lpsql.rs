@@ -20,10 +20,16 @@ pub struct Conf {
 impl Conf {
     pub fn new() -> Self {
         let path = Path::new("lpsql.toml");
-        let mut file = File::open(&path).unwrap();
-        let mut content = String::new();
-        file.read_to_string(&mut content).unwrap();
-        let conf: Conf = toml::from_str(&content).unwrap();
-        return conf;
+        match File::open(&path) {
+			Err(e) => {
+				panic!("Unable to open 'lpsql.toml': {e:}");
+			},
+			Ok(mut file) => {
+				let mut content = String::new();
+				file.read_to_string(&mut content).unwrap();
+				let conf: Conf = toml::from_str(&content).unwrap();
+				return conf;
+			}
+		};
     }
 }
