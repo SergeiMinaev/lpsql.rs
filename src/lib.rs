@@ -90,7 +90,7 @@ pub fn _exec(query: &str, params: Vec<QueryParam>
             }
         } else {
             let st = PQresultStatus(prepare_res);
-            println!("PQprepare status: {st:?}");
+            println!("PQprepare status: '{st:?}' for query: '{query}'");
             let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res));
             return result_and_finish(conn, Err(format!("PQprepare err: {err_msg:?}")));
         }
