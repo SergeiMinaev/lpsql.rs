@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 
 pub static CONF: Lazy<RwLock<Conf>> = Lazy::new(|| {
-    RwLock::new(Conf::new())
+    RwLock::new(Conf::new("lpsql.toml"))
 });
 
 #[derive(Debug, Deserialize)]
@@ -18,8 +18,8 @@ pub struct Conf {
 }
 
 impl Conf {
-    pub fn new() -> Self {
-        let path = Path::new("lpsql.toml");
+    pub fn new(conf_fname: &str) -> Self {
+        let path = Path::new(conf_fname);
         match File::open(&path) {
 			Err(e) => {
 				panic!("Unable to open 'lpsql.toml': {e:}");
