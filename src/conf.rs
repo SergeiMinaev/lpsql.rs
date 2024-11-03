@@ -10,7 +10,7 @@ pub static CONF: Lazy<RwLock<Conf>> = Lazy::new(|| {
     RwLock::new(Conf::new("lpsql.toml"))
 });
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Conf {
     pub dbname: String,
     pub user: String,

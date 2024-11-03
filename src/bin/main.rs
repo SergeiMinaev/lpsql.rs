@@ -1,55 +1,43 @@
-use lpsql::QueryParam as qp;
-use serde::{Serialize,Deserialize};
+//use serde::{Serialize,Deserialize};
+//use lpsql::QueryParam as qp;
+//use lpsql::Lpsql;
+//use lpsql::pool::ConnectionPool;
+use futures_lite::future;
+//use std::time::Duration;
+//use lpsql::db::get_pool;
+//use async_std::task;
+//use std::sync::Arc;
 
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct User {
-    id: Option<f64>,
-    name: String,
-    is_active: bool,
-}
-impl User {
-}
+//async fn fetch_users(pool: Arc<ConnectionPool>) {
+	//let conn = pool.get_conn().await;
+	//let prms: Vec<qp> = vec![
+	//	//qp::Number(1),
+	//];
+	////let q = "select id from users_users where id > $1::INT;";
+	//let q = "select pg_sleep(5)";
+	//let r = conn.exec(q, prms).await;
+	//pool.release_conn(conn).await;
+	//println!("done: {r:?}");
+//}
 
-impl User {
-    pub fn all() -> Vec<User> {
-        let mut structs: Vec<User> = vec![];
-        let prms: Vec<qp> = vec![];
-        let query = "select row_to_json(data) from (select * from users) data";
-        let r = lpsql::_exec(query, prms);
-        for row in r.unwrap() {
-            //println!("row: {row:?}\n");
-            let u: User = serde_json::from_str(&row).unwrap();
-            structs.push(u);
-        }
-        structs
-    }
-    fn _create(name: String, is_active: bool) {
-        let prms: Vec<qp> = vec![
-            qp::String(name),
-            qp::Bool(is_active),
-        ];
-        let query = "insert into users (name, is_active) \
-            values ($1::TEXT, $2::BOOL)";
-        match lpsql::_exec(query, prms) {
-            Err(e) => println!("{e}"),
-            Ok(v) => println!("{v:?}"),
-        }
-    }
+async fn amain() {
+	//let pool = get_pool().clone();
+	//let mut tasks = vec![];
+
+    //for _ in 0..22 {
+    //    let pool_clone = pool.clone();
+    //    let task = task::spawn(async move {
+    //        fetch_users(pool_clone).await;
+    //    });
+    //    tasks.push(task);
+    //}
+
+    //for task in tasks {
+    //    task.await;
+    //}
 }
 
 fn main() {
-    let prms: Vec<qp> = vec![
-        qp::Number(7),
-        qp::String("mia".into()),
-        qp::Bool(true),
-    ];
-    let query = "select * from users where id = $1::INT \
-                 and name = $2::TEXT and is_active = $3::BOOL";
-    let r = lpsql::_exec(query, prms);
-    println!("SQL result: {r:?}");
-    
-    let _users = User::all();
-    //let _users_s = serde_json::to_string(&users);
-    //User::_create("serj".to_string(), true);
+	future::block_on(amain());
 }
