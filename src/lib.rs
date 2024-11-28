@@ -17,10 +17,24 @@ use async_std::sync::Mutex;
 use std::boxed::Box;
 use std::time::{Instant};
 use std::time::Duration;
+use log::debug;
 
 pub mod pool;
 
 
+#[derive(Debug)]
+pub enum LpsqlError {
+    ConnectionFailed,
+    PrepareFailed(String),
+    ExecuteFailed(String),
+    BadResponse(String),
+    FatalError(String),
+    UnexpectedError(String),
+    CStringError(String),
+}
+
+
+#[derive(Debug,Clone)]
 pub enum QueryParam {
     Number(i32),
     String(String),
@@ -79,7 +93,7 @@ impl Lpsql {
         self.last_used = Instant::now();
     }
 
-	pub async fn exec(&self, query: &str, params: Vec<QueryParam>) -> io::Result<Vec<String>> {
+	pub async fn _exec(&self, query: &str, params: Vec<QueryParam>) -> Result<*mut pg_result, LpsqlError> {
 		let conn_ptr = {
 			let mut conn_lock = self.conn.lock().await;
 			(*conn_lock).as_mut() as *mut PGconn
@@ -87,7 +101,7 @@ impl Lpsql {
 
 		unsafe {
 			if PQstatus(conn_ptr) != CONNECTION_OK {
-				return Err(io::Error::new(io::ErrorKind::Other, "Connection failed"));
+				return Err(LpsqlError::ConnectionFailed)
 			}
 
 			let stmt_name = CString::new(format!("stmt_{}", hash_query(query))).unwrap();
@@ -106,7 +120,7 @@ impl Lpsql {
 					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
 						.to_string_lossy().into_owned();
 					PQclear(prepare_res);
-					return Err(io::Error::new(io::ErrorKind::Other, format!("Bad response during prepare: {}", err_msg)));
+					return Err(LpsqlError::BadResponse(err_msg))
 				},
 				PGRES_FATAL_ERROR => {
 					// Prepared query is probably already exists.
@@ -115,112 +129,81 @@ impl Lpsql {
 					PQclear(prepare_res);
 					if err_msg.contains("already exists") {
 						// Ignore if prepared query already exists.
-						//println!("Prepared statement already exists: {}", err_msg);
 					} else {
-						return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to prepare statement: {}", err_msg)));
+						return Err(LpsqlError::PrepareFailed(err_msg))
 					}
 				},
 				_ => {
 					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
 						.to_string_lossy().into_owned();
 					PQclear(prepare_res);
-					return Err(io::Error::new(io::ErrorKind::Other, format!("Unexpected error during prepare: {}", err_msg)));
+					return Err(LpsqlError::UnexpectedError(err_msg))
 				}
 			}
 
-			// Execute prepared query
 			let param_vals: Vec<_> = params.into_iter().map(|p| CString::new(p.to_string()).unwrap()).collect();
 			let p_vecc_ptr: Vec<_> = param_vals.iter().map(|arg| arg.as_ptr()).collect();
-			let res = PQexecPrepared(conn_ptr, stmt_name.as_ptr(), n_params, p_vecc_ptr.as_ptr(), ptr::null(), ptr::null(), 0);
-
-			// Handle result
-			if PQresultStatus(res) == PGRES_TUPLES_OK {
-				let mut results = Vec::new();
-				let num_rows = PQntuples(res);
-				let num_cols = PQnfields(res);
-
-				for row_idx in 0..num_rows {
-					for col_idx in 0..num_cols {
-						let value_ptr = PQgetvalue(res, row_idx, col_idx);
-						let field_val = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
-						results.push(field_val);
-					}
-				}
-
-				PQclear(res);
-				return Ok(results);
-			} else {
-				let err_msg = CStr::from_ptr(PQresultErrorMessage(res))
-					.to_string_lossy().into_owned();
-				PQclear(res);
-				return Err(io::Error::new(io::ErrorKind::Other, format!("Query error: {}", err_msg)));
-			}
+			let res_ptr = PQexecPrepared(conn_ptr, stmt_name.as_ptr(), n_params, p_vecc_ptr.as_ptr(), ptr::null(), ptr::null(), 0);
+			return Ok(res_ptr)
 		}
 	}
 
-	pub async fn _exec(&self, query: &str, params: Vec<QueryParam>) -> io::Result<Vec<String>> {
+	pub async fn exec(&self, query: &str, params: Vec<QueryParam>) -> io::Result<Vec<String>> {
 		unsafe {
-			let conn_ptr = {
-				let mut conn_lock = self.conn.lock().await;
-				(*conn_lock).as_mut() as *mut PGconn
-			};
-
-			if PQstatus(conn_ptr) != CONNECTION_OK {
-				return Err(io::Error::new(io::ErrorKind::Other, "Connection failed"));
-			}
-
-			let stmt_name = CString::new(thread_rng().gen_range(0..9999).to_string()).unwrap();
-			let stmt = CString::new(query).unwrap();
-			let n_params = params.len() as i32;
-			let prepare_res = PQprepare(
-				conn_ptr, stmt_name.as_ptr(), stmt.as_ptr(), n_params, ptr::null()
-			);
-
-			if PQresultStatus(prepare_res) != PGRES_COMMAND_OK {
-				let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
-					.to_string_lossy().into_owned();
-				PQclear(prepare_res);
-				return Err(io::Error::new(
-					io::ErrorKind::Other, format!("Failed to prepare statement: {}", err_msg))
-				);
-			}
-
-			let param_vals: Vec<_> = params.into_iter().map(|p| CString::new(p.to_string())
-				.unwrap()).collect();
-			let p_vecc_ptr: Vec<_> = param_vals.iter().map(|arg| arg.as_ptr()).collect();
-			let res = PQexecPrepared(
-				conn_ptr, stmt_name.as_ptr(), n_params, p_vecc_ptr.as_ptr(),
-				ptr::null(), ptr::null(), 0
-			);
-
-			if PQresultStatus(res) == PGRES_TUPLES_OK {
+			// TODO: remove unwrap
+			let res_ptr = self._exec(query, params).await.unwrap();
+			// Handle result
+			let status = PQresultStatus(res_ptr);
+			if status == PGRES_TUPLES_OK || status == PGRES_COMMAND_OK {
 				let mut results = Vec::new();
-				let num_rows = PQntuples(res);
-				let num_cols = PQnfields(res);
+				let num_rows = PQntuples(res_ptr);
+				let num_cols = PQnfields(res_ptr);
 
 				for row_idx in 0..num_rows {
 					for col_idx in 0..num_cols {
-						let value_ptr = PQgetvalue(res, row_idx, col_idx);
+						let value_ptr = PQgetvalue(res_ptr, row_idx, col_idx);
 						let field_val = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
 						results.push(field_val);
 					}
 				}
 
-				PQclear(res);
-				return Ok(results);
+				PQclear(res_ptr);
+				return Ok(results)
 			} else {
-				let err_msg = CStr::from_ptr(PQresultErrorMessage(res))
+				let err_msg = CStr::from_ptr(PQresultErrorMessage(res_ptr))
 					.to_string_lossy().into_owned();
-				PQclear(res);
-				return Err(io::Error::new(io::ErrorKind::Other, format!("Query error: {}", err_msg)));
+				let status_str = match status {
+					PGRES_TUPLES_OK => "PGRES_TUPLES_OK",
+					PGRES_COMMAND_OK => "PGRES_COMMAND_OK",
+					PGRES_BAD_RESPONSE => "PGRES_BAD_RESPONSE",
+					_ => "Unknown status",
+				};
+				PQclear(res_ptr);
+				//debug!("lpsql exec failed, returned status: {status_str}. Err: '{err_msg}'. Query: '{query}'. Params: '{:?}'", param_vals);
+				return Err(io::Error::new(io::ErrorKind::Other, format!("Query error: {}", err_msg)))
 			}
 		}
 	}
 
+	pub async fn delete(&self, query: &str, params: Vec<QueryParam>) -> Result<i32, String> {
+		unsafe {
+			let res_ptr = self._exec(query, params).await.unwrap();
+			let status = PQresultStatus(res_ptr);
+			if status == PGRES_COMMAND_OK {
+				let rows_affected_str = unsafe { CStr::from_ptr(PQcmdTuples(res_ptr)) }
+					.to_string_lossy()
+					.into_owned();
+				let rows_affected: i32 = rows_affected_str.parse().unwrap_or(0);
+				debug!("Rows deleted: {}", rows_affected);
+				return Ok(rows_affected)
+			} else {
+				return Err("Failed to delete".to_string())
+			}
+		}
+	}
 	pub async fn get_one(&self, query: &str, params: Vec<QueryParam>) -> Option<String> {
 		match self.exec(query, params).await {
 			Err(e) => {
-				println!("get_one err: {e}");
 				return None
 			},
 			Ok(v) => {
