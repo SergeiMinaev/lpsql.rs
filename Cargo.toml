@@ -1,7 +1,7 @@
 [package]
 name = "lpsql"
 description = "[draft] Micro PostgreSQL async driver based on libpq."
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Sergei Minaev <i@zenux.ru>"]
 edition = "2021"
 

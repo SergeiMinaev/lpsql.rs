@@ -1,25 +1,26 @@
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::hash::DefaultHasher;
+use std::ffi::{CString, CStr};
+use std::{str, ptr};
+use std::sync::Arc;
+use std::boxed::Box;
+use std::time::{Instant, Duration};
 use pq_sys::ConnStatusType::CONNECTION_OK;
 use pq_sys::ExecStatusType::PGRES_COMMAND_OK;
 use pq_sys::ExecStatusType::PGRES_TUPLES_OK;
 use pq_sys::ExecStatusType::PGRES_BAD_RESPONSE;
 use pq_sys::ExecStatusType::PGRES_FATAL_ERROR;
-use std::hash::{Hash, Hasher};
-use std::hash::DefaultHasher;
-pub mod conf;
-use std::ffi::{CString, CStr};
-use std::{str, ptr};
-use rand::{thread_rng, Rng};
 use pq_sys::*;
 use crate::conf::Conf;
-use smol::io;
-use std::sync::Arc;
+use crate::tosql::ToSql;
 use async_std::sync::Mutex;
-use std::boxed::Box;
-use std::time::{Instant};
-use std::time::Duration;
 use log::debug;
+use crate::pool::ConnectionPool;
 
+pub mod conf;
 pub mod pool;
+pub mod tosql;
 
 
 #[derive(Debug)]
@@ -32,35 +33,64 @@ pub enum LpsqlError {
     UnexpectedError(String),
     CStringError(String),
 }
-
-
-#[derive(Debug,Clone)]
-pub enum QueryParam {
-    Number(i32),
-    String(String),
-    Bool(bool),
-}
-
-impl QueryParam {
-    pub fn to_string(&self) -> String {
+impl fmt::Display for LpsqlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QueryParam::Number(n) => n.to_string(),
-            QueryParam::String(s) => s.to_string(),
-            QueryParam::Bool(s) => s.to_string(),
+            LpsqlError::ConnectionFailed => write!(f, "ConnectionFailed"),
+            LpsqlError::PrepareFailed(reason) => write!(f, "PrepareFailed: {}", reason),
+            LpsqlError::ExecuteFailed(reason) => write!(f, "ExecuteFailed: {}", reason),
+            LpsqlError::BadResponse(reason) => write!(f, "BadResponse: {}", reason),
+            LpsqlError::FatalError(reason) => write!(f, "FatalError: {}", reason),
+            LpsqlError::UnexpectedError(reason) => write!(f, "UnexpectedError: {}", reason),
+            LpsqlError::CStringError(reason) => write!(f, "CStringError: {}", reason),
         }
     }
 }
 
 
 pub struct Lpsql {
+	query: String,
+	prms: Vec<CString>,
+
+}
+impl Lpsql {
+	pub fn query(query: &str) -> Self {
+		Self { query: query.to_string(), prms: Vec::new() }
+	}
+	pub fn bind<T: ToSql>(&mut self, p: T) -> &mut Self {
+		self.prms.push(p.to_sql());
+		self
+	}
+	pub async fn exec(&mut self, pool: &ConnectionPool) -> i32 {
+        let conn: LpsqlConn = pool.get_conn().await;
+		let r = conn.exec(&self.query, self.prms.clone()).await.unwrap();
+        pool.release_conn(conn).await;
+		return r
+	}
+	pub async fn fetch_all(&mut self, pool: &ConnectionPool) -> Vec<String> {
+        let conn: LpsqlConn = pool.get_conn().await;
+		let r = conn.fetchall(&self.query, self.prms.clone()).await.unwrap();
+        pool.release_conn(conn).await;
+		return r
+	}
+	pub async fn fetch_one(&mut self, pool: &ConnectionPool) -> Option<String> {
+        let conn: LpsqlConn = pool.get_conn().await;
+		let r = conn.fetch_one(&self.query, self.prms.clone()).await.unwrap();
+        pool.release_conn(conn).await;
+		return r
+	}
+}
+
+
+pub struct LpsqlConn {
     pub conf: Conf,
 	pub conn: Arc<Mutex<Box<PGconn>>>,
     pub last_used: Instant,
 	pub conn_timeout: Duration,
 }
 
-impl Lpsql {
-	pub fn new(conf: Conf, conn_timeout: Duration) -> Self {
+impl LpsqlConn {
+	pub fn setup(conf: Conf, conn_timeout: Duration) -> Self {
 		let conninfo = CString::new(format!(
 			"dbname={} user={} password={}", conf.dbname, conf.user, conf.password
 		)).unwrap();
@@ -76,7 +106,6 @@ impl Lpsql {
 			conn_timeout: conn_timeout,
 		}
 	}
-
 	pub async fn is_active(&self) -> bool {
 		let conn_ptr = {
 			let mut conn_lock = self.conn.lock().await;
@@ -84,16 +113,13 @@ impl Lpsql {
 		};
 		unsafe { PQstatus(conn_ptr) == CONNECTION_OK }
 	}
-
     fn is_timeout_exceed(&self) -> bool {
         self.last_used.elapsed() > self.conn_timeout
     }
-
     fn touch(&mut self) {
         self.last_used = Instant::now();
     }
-
-	pub async fn _exec(&self, query: &str, params: Vec<QueryParam>) -> Result<*mut pg_result, LpsqlError> {
+	pub async fn inner_exec(&self, query: &str, params: Vec<CString>) -> Result<*mut pg_result, LpsqlError> {
 		let conn_ptr = {
 			let mut conn_lock = self.conn.lock().await;
 			(*conn_lock).as_mut() as *mut PGconn
@@ -141,81 +167,85 @@ impl Lpsql {
 				}
 			}
 
-			let param_vals: Vec<_> = params.into_iter().map(|p| CString::new(p.to_string()).unwrap()).collect();
-			let p_vecc_ptr: Vec<_> = param_vals.iter().map(|arg| arg.as_ptr()).collect();
+			let p_vecc_ptr: Vec<_> = params.iter().map(|arg| arg.as_ptr()).collect();
 			let res_ptr = PQexecPrepared(conn_ptr, stmt_name.as_ptr(), n_params, p_vecc_ptr.as_ptr(), ptr::null(), ptr::null(), 0);
 			return Ok(res_ptr)
 		}
 	}
-
-	pub async fn exec(&self, query: &str, params: Vec<QueryParam>) -> io::Result<Vec<String>> {
+	pub async fn fetchall(&self, query: &str, params: Vec<CString>) -> Result<Vec<String>, LpsqlError> {
 		unsafe {
-			// TODO: remove unwrap
-			let res_ptr = self._exec(query, params).await.unwrap();
-			// Handle result
-			let status = PQresultStatus(res_ptr);
-			if status == PGRES_TUPLES_OK || status == PGRES_COMMAND_OK {
-				let mut results = Vec::new();
-				let num_rows = PQntuples(res_ptr);
-				let num_cols = PQnfields(res_ptr);
+			match self.inner_exec(query, params).await {
+				Err(e) => {
+					debug!("LpsqlError: {e}");
+					return Err(e)
+				},
+				Ok(res_ptr) => {
+					// Handle result
+					let status = PQresultStatus(res_ptr);
+					if status == PGRES_TUPLES_OK || status == PGRES_COMMAND_OK {
+						let mut results = Vec::new();
+						let num_rows = PQntuples(res_ptr);
+						let num_cols = PQnfields(res_ptr);
 
-				for row_idx in 0..num_rows {
-					for col_idx in 0..num_cols {
-						let value_ptr = PQgetvalue(res_ptr, row_idx, col_idx);
-						let field_val = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
-						results.push(field_val);
+						for row_idx in 0..num_rows {
+							for col_idx in 0..num_cols {
+								let value_ptr = PQgetvalue(res_ptr, row_idx, col_idx);
+								let field_val = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
+								results.push(field_val);
+							}
+						}
+
+						PQclear(res_ptr);
+						return Ok(results)
+					} else {
+						let err_msg = CStr::from_ptr(PQresultErrorMessage(res_ptr))
+							.to_string_lossy().into_owned();
+						let _status_str = match status {
+							PGRES_TUPLES_OK => "PGRES_TUPLES_OK",
+							PGRES_COMMAND_OK => "PGRES_COMMAND_OK",
+							PGRES_BAD_RESPONSE => "PGRES_BAD_RESPONSE",
+							_ => "Unknown status",
+						};
+						PQclear(res_ptr);
+						debug!("LpsqlError: {err_msg}");
+						return Err(LpsqlError::CStringError(format!("Query error: {}", err_msg)))
 					}
 				}
-
-				PQclear(res_ptr);
-				return Ok(results)
-			} else {
-				let err_msg = CStr::from_ptr(PQresultErrorMessage(res_ptr))
-					.to_string_lossy().into_owned();
-				let status_str = match status {
-					PGRES_TUPLES_OK => "PGRES_TUPLES_OK",
-					PGRES_COMMAND_OK => "PGRES_COMMAND_OK",
-					PGRES_BAD_RESPONSE => "PGRES_BAD_RESPONSE",
-					_ => "Unknown status",
-				};
-				PQclear(res_ptr);
-				//debug!("lpsql exec failed, returned status: {status_str}. Err: '{err_msg}'. Query: '{query}'. Params: '{:?}'", param_vals);
-				return Err(io::Error::new(io::ErrorKind::Other, format!("Query error: {}", err_msg)))
 			}
 		}
 	}
-
-	pub async fn delete(&self, query: &str, params: Vec<QueryParam>) -> Result<i32, String> {
+	pub async fn exec(&self, query: &str, params: Vec<CString>) -> Result<i32, LpsqlError> {
 		unsafe {
-			let res_ptr = self._exec(query, params).await.unwrap();
+			let res_ptr = self.inner_exec(query, params).await.unwrap();
 			let status = PQresultStatus(res_ptr);
 			if status == PGRES_COMMAND_OK {
-				let rows_affected_str = unsafe { CStr::from_ptr(PQcmdTuples(res_ptr)) }
+				let rows_affected_str = CStr::from_ptr(PQcmdTuples(res_ptr))
 					.to_string_lossy()
 					.into_owned();
 				let rows_affected: i32 = rows_affected_str.parse().unwrap_or(0);
-				debug!("Rows deleted: {}", rows_affected);
 				return Ok(rows_affected)
 			} else {
-				return Err("Failed to delete".to_string())
+				return Err(LpsqlError::UnexpectedError("Failed to delete".to_string()))
 			}
 		}
 	}
-	pub async fn get_one(&self, query: &str, params: Vec<QueryParam>) -> Option<String> {
-		match self.exec(query, params).await {
+	pub async fn fetch_one(&self, query: &str, params: Vec<CString>)
+		-> Result<Option<String>, LpsqlError>
+	{
+		match self.fetchall(query, params).await {
 			Err(e) => {
-				return None
+				let msg = format!("fetch_one failed: {e:?}");
+				return Err(LpsqlError::UnexpectedError(msg))
 			},
 			Ok(v) => {
 				if v.len() == 0 {
-					return None
+					return Ok(None)
 				} else {
-					return Some(v[0].to_string())
+					return Ok(Some(v[0].to_string()))
 				}
 			}
 		}
 	}
-
 	pub async fn close(&self) {
 		unsafe {
 			let mut conn_lock = self.conn.lock().await;

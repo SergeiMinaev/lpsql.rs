@@ -1,4 +1,4 @@
-use crate::Lpsql;
+use crate::LpsqlConn;
 use async_std::channel::{bounded, Sender, Receiver};
 use std::time::Duration;
 use async_std::task;
@@ -7,8 +7,8 @@ use crate::conf::Conf;
 static DEF_CONN_TIMEOUT_SEC: u64 = 5;
 
 pub struct ConnectionPool {
-    sender: Sender<Lpsql>,
-    receiver: Receiver<Lpsql>,
+    sender: Sender<LpsqlConn>,
+    receiver: Receiver<LpsqlConn>,
 	conf: Conf,
 	conn_timeout: Duration,
 }
@@ -19,7 +19,7 @@ impl ConnectionPool {
 		let conn_timeout = Duration::from_secs(conn_timeout.unwrap_or(DEF_CONN_TIMEOUT_SEC));
         let (sender, receiver) = bounded(size);
         for _ in 0..size {
-			let conn = Lpsql::new(conf.clone(), conn_timeout.clone());
+			let conn = LpsqlConn::setup(conf.clone(), conn_timeout.clone());
             sender.try_send(conn).unwrap();
         }
         let pool = ConnectionPool { sender, receiver, conf, conn_timeout };
@@ -27,13 +27,13 @@ impl ConnectionPool {
 		pool
     }
 
-    pub async fn get_conn(&self) -> Lpsql {
+    pub async fn get_conn(&self) -> LpsqlConn {
         let mut conn = self.receiver.recv().await.unwrap();
 		conn.touch();
 		conn
     }
 
-    pub async fn release_conn(&self, mut conn: Lpsql) {
+    pub async fn release_conn(&self, mut conn: LpsqlConn) {
 		conn.touch();
         self.sender.send(conn).await.unwrap();
     }
@@ -51,10 +51,10 @@ impl ConnectionPool {
 				while let Ok(conn) = receiver.try_recv() {
 					if conn.is_timeout_exceed() {
 						conn.close().await;
-						active_conns.push(Lpsql::new(conf.clone(), conn_timeout.clone()));
+						active_conns.push(LpsqlConn::setup(conf.clone(), conn_timeout.clone()));
 					} else if conn.is_active().await == false {
 						conn.close().await;
-						active_conns.push(Lpsql::new(conf.clone(), conn_timeout.clone()));
+						active_conns.push(LpsqlConn::setup(conf.clone(), conn_timeout.clone()));
 					} else {
 						active_conns.push(conn);
 					}
