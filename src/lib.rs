@@ -156,6 +156,7 @@ impl LpsqlConn {
 					if err_msg.contains("already exists") {
 						// Ignore if prepared query already exists.
 					} else {
+						debug!("Lpsq PQprepare failed at query:\n{query}");
 						return Err(LpsqlError::PrepareFailed(err_msg))
 					}
 				},
@@ -218,14 +219,15 @@ impl LpsqlConn {
 		unsafe {
 			let res_ptr = self.inner_exec(query, params).await.unwrap();
 			let status = PQresultStatus(res_ptr);
-			if status == PGRES_COMMAND_OK {
+			if status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK {
 				let rows_affected_str = CStr::from_ptr(PQcmdTuples(res_ptr))
 					.to_string_lossy()
 					.into_owned();
 				let rows_affected: i32 = rows_affected_str.parse().unwrap_or(0);
 				return Ok(rows_affected)
 			} else {
-				return Err(LpsqlError::UnexpectedError("Failed to delete".to_string()))
+				debug!("Lpsql.exec failed with status {status:?} at {query}");
+				return Err(LpsqlError::UnexpectedError("Failed to exec".to_string()))
 			}
 		}
 	}
