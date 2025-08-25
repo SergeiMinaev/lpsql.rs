@@ -17,6 +17,12 @@ impl ToSql for u32 {
     }
 }
 
+impl ToSql for i64 {
+    fn to_sql(&self) -> CString {
+        CString::new(self.to_string()).unwrap()
+    }
+}
+
 impl ToSql for f64 {
     fn to_sql(&self) -> CString {
         CString::new(self.to_string()).unwrap()
