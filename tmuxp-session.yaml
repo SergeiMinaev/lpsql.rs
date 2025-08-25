@@ -1,0 +1,27 @@
+# Если вы не используете Tmuxp, игнорируйте этот файл.
+#
+# Конфиг для запуска проекта через сессию Tmuxp ( https://github.com/tmux-python/tmuxp ).
+# Для загрузки сессии VIM, должен быть установлен плагин https://github.com/mhinz/vim-startify ,
+# а сессия должна быть сохранена с названием lpsql.
+# Путь до каталога проекта должен быть записан в $LPSQL_HOME.
+# Проект запускается этой командой:
+# tmuxp load /work/lpsql/tmuxp-session.yaml
+
+
+session_name: lpsql
+start_directory: $LPSQL_HOME
+windows:
+
+- window_name: manage
+
+- window_name: ai
+  panes:
+    - shell_command:
+      - ./aider.sh
+
+- window_name: code
+  focus: true
+  panes:
+    - shell_command:
+      - vim
+      - :SLoad lpsql
