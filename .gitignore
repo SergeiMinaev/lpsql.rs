@@ -18,3 +18,5 @@ lpsql.toml
 *.pid
 
 __pycache__/
+.aider*
+aider.sh
