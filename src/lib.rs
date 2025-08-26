@@ -13,7 +13,7 @@ use pq_sys::ExecStatusType::PGRES_BAD_RESPONSE;
 use pq_sys::ExecStatusType::PGRES_FATAL_ERROR;
 use pq_sys::*;
 use crate::conf::Conf;
-use crate::tosql::ToSql;
+use crate::tosql::{ToSql, SqlParam};
 use async_std::sync::Mutex;
 use log::debug;
 use crate::pool::ConnectionPool;
@@ -50,7 +50,7 @@ impl fmt::Display for LpsqlError {
 
 pub struct Lpsql {
 	query: String,
-	prms: Vec<CString>,
+	prms: Vec<SqlParam>,
 
 }
 impl Lpsql {
@@ -119,7 +119,7 @@ impl LpsqlConn {
     fn touch(&mut self) {
         self.last_used = Instant::now();
     }
-	pub async fn inner_exec(&self, query: &str, params: Vec<CString>) -> Result<*mut pg_result, LpsqlError> {
+	pub async fn inner_exec(&self, query: &str, params: Vec<SqlParam>) -> Result<*mut pg_result, LpsqlError> {
 		let conn_ptr = {
 			let mut conn_lock = self.conn.lock().await;
 			(*conn_lock).as_mut() as *mut PGconn
@@ -173,7 +173,7 @@ impl LpsqlConn {
 			return Ok(res_ptr)
 		}
 	}
-	pub async fn fetchall(&self, query: &str, params: Vec<CString>) -> Result<Vec<String>, LpsqlError> {
+	pub async fn fetchall(&self, query: &str, params: Vec<SqlParam>) -> Result<Vec<String>, LpsqlError> {
 		unsafe {
 			match self.inner_exec(query, params).await {
 				Err(e) => {
@@ -215,7 +215,7 @@ impl LpsqlConn {
 			}
 		}
 	}
-	pub async fn exec(&self, query: &str, params: Vec<CString>) -> Result<i32, LpsqlError> {
+	pub async fn exec(&self, query: &str, params: Vec<SqlParam>) -> Result<i32, LpsqlError> {
 		unsafe {
 			let res_ptr = self.inner_exec(query, params).await.unwrap();
 			let status = PQresultStatus(res_ptr);
@@ -231,7 +231,7 @@ impl LpsqlConn {
 			}
 		}
 	}
-	pub async fn fetch_one(&self, query: &str, params: Vec<CString>)
+	pub async fn fetch_one(&self, query: &str, params: Vec<SqlParam>)
 		-> Result<Option<String>, LpsqlError>
 	{
 		match self.fetchall(query, params).await {
