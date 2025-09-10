@@ -42,7 +42,12 @@ impl ToSql for i64 {
 
 impl ToSql for f64 {
     fn to_sql(&self) -> SqlParam {
-        SqlParam::Text(CString::new(self.to_string()).unwrap())
+        // Treat IEEE-754 NaN as an absent value and encode it as SQL NULL.
+        if self.is_nan() {
+            SqlParam::Null
+        } else {
+            SqlParam::Text(CString::new(self.to_string()).unwrap())
+        }
     }
 }
 
