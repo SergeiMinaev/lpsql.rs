@@ -1,5 +1,6 @@
 use std::ffi::{CString};
 use std::ptr;
+use serde_json::Value;
 
 
 #[derive(Clone)]
@@ -80,6 +81,23 @@ impl<T: ToSql> ToSql for Option<T> {
         match self {
             Some(v) => v.to_sql(),
             None => SqlParam::Null,
+        }
+    }
+}
+
+impl ToSql for Value {
+    fn to_sql(&self) -> SqlParam {
+        match self {
+            Value::Null => SqlParam::Null,
+            v => {
+                let s = v.to_string();
+                if s.contains('\0') {
+                    // unlikely; treat as NULL to avoid CString::new error
+                    SqlParam::Null
+                } else {
+                    SqlParam::Text(CString::new(s).unwrap())
+                }
+            }
         }
     }
 }
