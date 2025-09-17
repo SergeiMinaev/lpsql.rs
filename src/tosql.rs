@@ -28,6 +28,12 @@ impl ToSql for i32 {
     }
 }
 
+impl ToSql for i16 {
+    fn to_sql(&self) -> SqlParam {
+        SqlParam::Text(CString::new(self.to_string()).unwrap())
+    }
+}
+
 impl ToSql for u32 {
     fn to_sql(&self) -> SqlParam {
         SqlParam::Text(CString::new(self.to_string()).unwrap())
