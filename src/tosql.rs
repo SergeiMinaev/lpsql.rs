@@ -71,6 +71,12 @@ impl ToSql for &str {
     }
 }
 
+impl ToSql for &String {
+    fn to_sql(&self) -> SqlParam {
+		self.as_str().to_sql()
+    }
+}
+
 impl ToSql for DateTime<Utc> {
     fn to_sql(&self) -> SqlParam {
         let s = self.to_rfc3339();
