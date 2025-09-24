@@ -1,6 +1,7 @@
 use std::ffi::{CString};
 use std::ptr;
 use serde_json::Value;
+use chrono::{DateTime, Utc};
 
 
 #[derive(Clone)]
@@ -67,6 +68,26 @@ impl ToSql for String {
 impl ToSql for &str {
     fn to_sql(&self) -> SqlParam {
 		SqlParam::Text(CString::new(self.to_string()).unwrap())
+    }
+}
+
+impl ToSql for DateTime<Utc> {
+    fn to_sql(&self) -> SqlParam {
+        let s = self.to_rfc3339();
+        if s.contains('\0') {
+            SqlParam::Null
+        } else {
+            match CString::new(s) {
+                Ok(c) => SqlParam::Text(c),
+                Err(_) => SqlParam::Null,
+            }
+        }
+    }
+}
+
+impl ToSql for &DateTime<Utc> {
+    fn to_sql(&self) -> SqlParam {
+        (*self).to_sql()
     }
 }
 
