@@ -21,11 +21,15 @@ use crate::pool::ConnectionPool;
 pub mod conf;
 pub mod pool;
 pub mod tosql;
+pub mod rawconn;
+pub mod rawconn_async;
 
 
 #[derive(Debug)]
 pub enum LpsqlError {
     ConnectionFailed,
+    TransientError(String),
+    Timeout,
     PrepareFailed(String),
     ExecuteFailed(String),
     BadResponse(String),
@@ -37,6 +41,8 @@ impl fmt::Display for LpsqlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LpsqlError::ConnectionFailed => write!(f, "ConnectionFailed"),
+            LpsqlError::TransientError(reason) => write!(f, "TransientError: {}", reason),
+            LpsqlError::Timeout => write!(f, "Timeout"),
             LpsqlError::PrepareFailed(reason) => write!(f, "PrepareFailed: {}", reason),
             LpsqlError::ExecuteFailed(reason) => write!(f, "ExecuteFailed: {}", reason),
             LpsqlError::BadResponse(reason) => write!(f, "BadResponse: {}", reason),
@@ -69,15 +75,35 @@ impl Lpsql {
 	}
 	pub async fn fetch_all(&mut self, pool: &ConnectionPool) -> Vec<String> {
         let conn: LpsqlConn = pool.get_conn().await;
-		let r = conn.fetchall(&self.query, self.prms.clone()).await.unwrap();
-        pool.release_conn(conn).await;
-		return r
+		match conn.fetchall(&self.query, self.prms.clone()).await {
+			Err(e) => {
+				// Emit failing query to stderr (per request) and return an empty result.
+				eprintln!("Error executing SQL. Error: {e}. Query: {}", self.query);
+				debug!("Lpsql.fetch_all LpsqlError: {:?}", e);
+				pool.release_conn(conn).await;
+				Vec::new()
+			},
+			Ok(r) => {
+				pool.release_conn(conn).await;
+				r
+			}
+		}
 	}
 	pub async fn fetch_one(&mut self, pool: &ConnectionPool) -> Option<String> {
         let conn: LpsqlConn = pool.get_conn().await;
-		let r = conn.fetch_one(&self.query, self.prms.clone()).await.unwrap();
-        pool.release_conn(conn).await;
-		return r
+		match conn.fetch_one(&self.query, self.prms.clone()).await {
+			Err(e) => {
+				// Emit failing query to stderr (per request) and return None.
+				eprintln!("Error executing SQL. Error: {e}. Query: {}", self.query);
+				debug!("Lpsql.fetch_one LpsqlError: {:?}", e);
+				pool.release_conn(conn).await;
+				None
+			},
+			Ok(r) => {
+				pool.release_conn(conn).await;
+				r
+			}
+		}
 	}
 }
 
@@ -127,7 +153,9 @@ impl LpsqlConn {
 
 		unsafe {
 			if PQstatus(conn_ptr) != CONNECTION_OK {
-				return Err(LpsqlError::ConnectionFailed)
+				let err_msg = CStr::from_ptr(PQerrorMessage(conn_ptr)).to_string_lossy().into_owned();
+				debug!("LpsqlConn.inner_exec: connection not OK: {}", err_msg);
+				return Err(LpsqlError::TransientError(err_msg))
 			}
 
 			let stmt_name = CString::new(format!("stmt_{}", hash_query(query))).unwrap();
@@ -149,15 +177,14 @@ impl LpsqlConn {
 					return Err(LpsqlError::BadResponse(err_msg))
 				},
 				PGRES_FATAL_ERROR => {
-					// Prepared query is probably already exists.
 					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
 						.to_string_lossy().into_owned();
 					PQclear(prepare_res);
 					if err_msg.contains("already exists") {
 						// Ignore if prepared query already exists.
 					} else {
-						debug!("Lpsq PQprepare failed at query:\n{query}");
-						return Err(LpsqlError::PrepareFailed(err_msg))
+						debug!("LpsqlConn.PQprepare fatal error: {}", err_msg);
+						return Err(LpsqlError::FatalError(err_msg))
 					}
 				},
 				_ => {
@@ -177,6 +204,7 @@ impl LpsqlConn {
 		unsafe {
 			match self.inner_exec(query, params).await {
 				Err(e) => {
+					eprintln!("Error executing SQL: {}", query);
 					debug!("LpsqlError: {e}");
 					return Err(e)
 				},
@@ -208,8 +236,8 @@ impl LpsqlConn {
 							_ => "Unknown status",
 						};
 						PQclear(res_ptr);
-						debug!("LpsqlError: {err_msg}");
-						return Err(LpsqlError::CStringError(format!("Query error: {}", err_msg)))
+						debug!("Lpsql.fetchall query error: {}", err_msg);
+						return Err(LpsqlError::ExecuteFailed(err_msg))
 					}
 				}
 			}
@@ -226,8 +254,10 @@ impl LpsqlConn {
 				let rows_affected: i32 = rows_affected_str.parse().unwrap_or(0);
 				return Ok(rows_affected)
 			} else {
-				debug!("Lpsql.exec failed with status {status:?} at {query}");
-				return Err(LpsqlError::UnexpectedError("Failed to exec".to_string()))
+				let err_msg = CStr::from_ptr(PQresultErrorMessage(res_ptr)).to_string_lossy().into_owned();
+				debug!("Lpsql.exec failed: {}", err_msg);
+				PQclear(res_ptr);
+				return Err(LpsqlError::ExecuteFailed(err_msg))
 			}
 		}
 	}
@@ -236,8 +266,11 @@ impl LpsqlConn {
 	{
 		match self.fetchall(query, params).await {
 			Err(e) => {
-				let msg = format!("fetch_one failed: {e:?}");
-				return Err(LpsqlError::UnexpectedError(msg))
+				// Mirror fetchall's behavior: emit the failing query to stderr and
+				// propagate the original error so callers can handle it appropriately.
+				eprintln!("Error executing SQL: {}", query);
+				debug!("fetch_one LpsqlError: {:?}", e);
+				return Err(e)
 			},
 			Ok(v) => {
 				if v.len() == 0 {
