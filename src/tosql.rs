@@ -1,7 +1,7 @@
 use std::ffi::{CString};
 use std::ptr;
 use serde_json::Value;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, NaiveDate};
 
 
 #[derive(Clone)]
@@ -59,6 +59,17 @@ impl ToSql for f64 {
     }
 }
 
+impl ToSql for f32 {
+    fn to_sql(&self) -> SqlParam {
+        // Treat IEEE-754 NaN as an absent value and encode it as SQL NULL.
+        if self.is_nan() {
+            SqlParam::Null
+        } else {
+            SqlParam::Text(CString::new(self.to_string()).unwrap())
+        }
+    }
+}
+
 impl ToSql for String {
     fn to_sql(&self) -> SqlParam {
 		SqlParam::Text(CString::new(self.to_string()).unwrap())
@@ -92,6 +103,28 @@ impl ToSql for DateTime<Utc> {
 }
 
 impl ToSql for &DateTime<Utc> {
+    fn to_sql(&self) -> SqlParam {
+        (*self).to_sql()
+    }
+}
+
+impl ToSql for NaiveDate {
+    fn to_sql(&self) -> SqlParam {
+        // Serialize NaiveDate as "YYYY-MM-DD". Treat any unexpected NUL-containing
+        // strings as NULL to avoid CString::new errors.
+        let s = self.to_string();
+        if s.contains('\0') {
+            SqlParam::Null
+        } else {
+            match CString::new(s) {
+                Ok(c) => SqlParam::Text(c),
+                Err(_) => SqlParam::Null,
+            }
+        }
+    }
+}
+
+impl ToSql for &NaiveDate {
     fn to_sql(&self) -> SqlParam {
         (*self).to_sql()
     }
