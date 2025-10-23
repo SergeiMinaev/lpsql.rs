@@ -130,6 +130,16 @@ impl ToSql for &NaiveDate {
     }
 }
 
+impl ToSql for &[i64] {
+    fn to_sql(&self) -> SqlParam {
+        if self.is_empty() {
+            return SqlParam::Text(CString::new("{}").unwrap());
+        }
+        let s = format!("{{{}}}", self.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        SqlParam::Text(CString::new(s).unwrap())
+    }
+}
+
 impl ToSql for bool {
     fn to_sql(&self) -> SqlParam {
         SqlParam::Text(CString::new(self.to_string()).unwrap())
