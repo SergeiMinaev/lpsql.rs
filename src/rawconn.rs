@@ -277,6 +277,7 @@ impl RawConn {
                     let old_ptr = Box::into_raw(old_box);
                     PQfinish(old_ptr);
                     debug!("RawConn.reconnect: reconnected");
+                    self.prepared_statements.clear();
                     // Re-issue LISTENs for tracked channels (best-effort; ignore individual errors)
                     for ch in self.listened.clone() {
                         let _ = self.exec(&format!("LISTEN {}", ch), Vec::new());

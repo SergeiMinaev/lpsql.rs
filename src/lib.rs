@@ -6,6 +6,7 @@ use std::{str, ptr};
 use std::sync::Arc;
 use std::boxed::Box;
 use std::time::{Instant, Duration};
+use std::collections::HashSet;
 use pq_sys::ConnStatusType::CONNECTION_OK;
 use pq_sys::ExecStatusType::PGRES_COMMAND_OK;
 use pq_sys::ExecStatusType::PGRES_TUPLES_OK;
@@ -113,6 +114,7 @@ pub struct LpsqlConn {
 	pub conn: Arc<Mutex<Box<PGconn>>>,
     pub last_used: Instant,
 	pub conn_timeout: Duration,
+    prepared_statements: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl LpsqlConn {
@@ -130,6 +132,7 @@ impl LpsqlConn {
 			conn: Arc::new(Mutex::new(conn_box)),
 			last_used: Instant::now(),
 			conn_timeout: conn_timeout,
+			prepared_statements: Arc::new(Mutex::new(HashSet::new())),
 		}
 	}
 	pub async fn is_active(&self) -> bool {
@@ -158,40 +161,45 @@ impl LpsqlConn {
 				return Err(LpsqlError::TransientError(err_msg))
 			}
 
-			let stmt_name = CString::new(format!("stmt_{}", hash_query(query))).unwrap();
+			let stmt_hash = hash_query(query);
+			let stmt_name = CString::new(format!("stmt_{}", stmt_hash)).unwrap();
 			let stmt = CString::new(query).unwrap();
 			let n_params = params.len() as i32;
 
-			let prepare_res = PQprepare(
-				conn_ptr, stmt_name.as_ptr(), stmt.as_ptr(), n_params, ptr::null()
-			);
+			let already_prepared = self.prepared_statements.lock().await.contains(&stmt_hash);
+			if !already_prepared {
+				let prepare_res = PQprepare(
+					conn_ptr, stmt_name.as_ptr(), stmt.as_ptr(), n_params, ptr::null()
+				);
 
-			match PQresultStatus(prepare_res) {
-				PGRES_COMMAND_OK => {
-					PQclear(prepare_res);
-				},
-				PGRES_BAD_RESPONSE => {
-					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
-						.to_string_lossy().into_owned();
-					PQclear(prepare_res);
-					return Err(LpsqlError::BadResponse(err_msg))
-				},
-				PGRES_FATAL_ERROR => {
-					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
-						.to_string_lossy().into_owned();
-					PQclear(prepare_res);
-					if err_msg.contains("already exists") {
-						// Ignore if prepared query already exists.
-					} else {
-						debug!("LpsqlConn.PQprepare fatal error: {}", err_msg);
-						return Err(LpsqlError::FatalError(err_msg))
+				match PQresultStatus(prepare_res) {
+					PGRES_COMMAND_OK => {
+						PQclear(prepare_res);
+						self.prepared_statements.lock().await.insert(stmt_hash);
+					},
+					PGRES_BAD_RESPONSE => {
+						let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
+							.to_string_lossy().into_owned();
+						PQclear(prepare_res);
+						return Err(LpsqlError::BadResponse(err_msg))
+					},
+					PGRES_FATAL_ERROR => {
+						let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
+							.to_string_lossy().into_owned();
+						PQclear(prepare_res);
+						if err_msg.contains("already exists") {
+							self.prepared_statements.lock().await.insert(stmt_hash);
+						} else {
+							debug!("LpsqlConn.PQprepare fatal error: {}", err_msg);
+							return Err(LpsqlError::FatalError(err_msg))
+						}
+					},
+					_ => {
+						let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
+							.to_string_lossy().into_owned();
+						PQclear(prepare_res);
+						return Err(LpsqlError::UnexpectedError(err_msg))
 					}
-				},
-				_ => {
-					let err_msg = CStr::from_ptr(PQresultErrorMessage(prepare_res))
-						.to_string_lossy().into_owned();
-					PQclear(prepare_res);
-					return Err(LpsqlError::UnexpectedError(err_msg))
 				}
 			}
 
