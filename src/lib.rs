@@ -68,6 +68,26 @@ impl Lpsql {
 		self.prms.push(p.to_sql());
 		self
 	}
+	/// Пустой билдер: для запросов с динамическими частями, где
+	/// плейсхолдеры добавляются по ходу через push_bind, а не пишутся вручную.
+	pub fn builder() -> Self {
+		Self { query: String::new(), prms: Vec::new() }
+	}
+	/// Дописывает фрагмент SQL как есть (идентификаторы, ключевые слова).
+	/// Значения сюда передавать нельзя — только push_bind.
+	pub fn push(&mut self, frag: &str) -> &mut Self {
+		self.query.push_str(frag);
+		self
+	}
+	/// Дописывает плейсхолдер $N в текущую позицию строки и биндит значение.
+	/// Номер = позиция значения в prms, поэтому индексы не пишутся руками
+	/// и рассинхрон строки с биндами невозможен.
+	pub fn push_bind<T: ToSql>(&mut self, v: T) -> &mut Self {
+		self.prms.push(v.to_sql());
+		let n = self.prms.len();
+		self.query.push_str(&format!("${n}"));
+		self
+	}
 	pub async fn exec(&mut self, pool: &ConnectionPool) -> i32 {
         let conn: LpsqlConn = pool.get_conn().await;
 		let r = conn.exec(&self.query, self.prms.clone()).await.unwrap();
@@ -306,4 +326,62 @@ fn hash_query(query: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     query.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    fn texts(q: &Lpsql) -> Vec<Option<String>> {
+        q.prms.iter().map(|p| p.as_text().map(str::to_string)).collect()
+    }
+
+    #[test]
+    fn builder_starts_empty() {
+        let q = Lpsql::builder();
+        assert_eq!(q.query, "");
+        assert!(q.prms.is_empty());
+    }
+
+    #[test]
+    fn push_appends_without_binding() {
+        let mut q = Lpsql::builder();
+        q.push("select 1");
+        assert_eq!(q.query, "select 1");
+        assert!(q.prms.is_empty());
+    }
+
+    #[test]
+    fn push_bind_numbers_placeholders_in_order() {
+        let mut q = Lpsql::builder();
+        q.push("select * from t where a = ")
+            .push_bind(1i32)
+            .push(" and b = ")
+            .push_bind("x");
+        assert_eq!(q.query, "select * from t where a = $1 and b = $2");
+        assert_eq!(texts(&q), vec![Some("1".to_string()), Some("x".to_string())]);
+    }
+
+    // Повторяет логику apply_search: один паттерн биндится по разу на колонку,
+    // плейсхолдеры идут подряд, значения совпадают.
+    #[test]
+    fn search_over_columns_binds_pattern_per_column() {
+        let cols = ["name", "email"];
+        let mut q = Lpsql::builder();
+        q.push(" where (");
+        for (i, col) in cols.iter().enumerate() {
+            if i > 0 {
+                q.push(" or ");
+            }
+            q.push(&format!("coalesce({col}, '') ilike "));
+            q.push_bind("%abc%".to_string());
+            q.push("::text");
+        }
+        q.push(")");
+        assert_eq!(
+            q.query,
+            " where (coalesce(name, '') ilike $1::text or coalesce(email, '') ilike $2::text)"
+        );
+        assert_eq!(texts(&q), vec![Some("%abc%".to_string()), Some("%abc%".to_string())]);
+    }
 }

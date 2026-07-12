@@ -18,6 +18,14 @@ impl SqlParam {
             SqlParam::Null => ptr::null(),
         }
     }
+
+    /// Текстовое представление параметра (None для NULL). Для логов и тестов.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            SqlParam::Text(ref s) => s.to_str().ok(),
+            SqlParam::Null => None,
+        }
+    }
 }
 
 pub trait ToSql {
